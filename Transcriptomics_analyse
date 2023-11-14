@@ -1,0 +1,270 @@
+#PCA----
+# Prepare gene expression matrix for PCA analysis
+logfpkm <- log2(mRNA_fpkm+1)
+row.names(logfpkm) <- row.names(mRNA_fpkm)
+
+#####Outliers####
+gsg <- goodSamplesGenes(t(logfpkm))
+summary(gsg)
+gsg$allOK
+
+table(gsg$goodGenes)
+table(gsg$goodSamples)
+
+# remove genes that are detectd as outliers
+data_mRNA_logfpkm <- logfpkm[gsg$goodGenes == TRUE,]
+
+#Use fpkm_data
+pca.res <- pca(data_mRNA_logfpkm, metadata=CI_TCGA_mRNA)
+
+#Plot variance explained by each component
+screeplot(pca.res)
+
+#Plot 2 selected components/eigenvectors
+biplot(pca.res)
+biplot(pca.res, lab="", colby="TS", hline = 0, vline = 0,legendPosition = 'top') # Biplot without sample names
+
+#WCGNA Analysis----
+####Prepare the Data####
+col_metada <- CI_TCGA_mRNA[,c(7,8,10:18,32,34,46:51,67:69)]
+#Exclude Desmoit Tumor (just 2 samples)
+col_metada <- col_metada %>% filter(!(TS == "DT"))
+col_metada$TS <- as.factor(col_metada$TS)
+mRNA_fpkm <- mRNA_fpkm %>% select(rownames(col_metada))
+
+# Prepare gene expression matrix for PCA analysis
+logfpkm <- log2(mRNA_fpkm+1)
+row.names(logfpkm) <- row.names(mRNA_fpkm)
+
+#####Outliers####
+gsg <- goodSamplesGenes(t(logfpkm))
+summary(gsg)
+gsg$allOK
+
+table(gsg$goodGenes)
+table(gsg$goodSamples)
+
+# remove genes that are detectd as outliers
+data_mRNA_logfpkm <- logfpkm[gsg$goodGenes == TRUE,]
+
+# detect outlier samples - hierarchical clustering - method 1
+htree <- hclust(dist(t(data_mRNA_logfpkm)), method = "ward.D2")
+plot(htree)
+#####PCA####
+#Run PCA
+pca.res <- pca(data_mRNA_logfpkm , metadata=CI_TCGA_mRNA)
+
+#Plot variance explained by each component
+screeplot(pca.res)
+#Plot 2 selected components/eigenvectors
+biplot(pca.res)
+biplot(pca.res, colby = "TS", hline = 0, vline = 0,legendPosition = 'top') # Biplot with colors by sample type
+biplot(pca.res, lab="", colby="TS", hline = 0, vline = 0,legendPosition = 'top') # Biplot without sample names
+biplot(pca.res, x="PC1", y="PC3",lab="",colby="TS", hline = 0, vline = 0,legendPosition = 'top') # Biplot with PC1 and PC3
+#Plot several components
+pairsplot(pca.res, colby="TS")
+
+#####DGE####
+round_data <- round(data_mRNA_logfpkm)
+
+# create dds
+dds <- DESeqDataSetFromMatrix(countData = round_data,
+                              colData = col_metada,
+                              design = ~ 1)
+
+## Filtering remove all genes with counts low counts in more than 75% of samples 
+## suggested by WGCNA on RNAseq FAQ
+
+dds75 <- dds[rowSums(counts(dds) >= 3) >= 24,]
+nrow(dds75)
+
+# perform variance stabilization
+dds_norm <- varianceStabilizingTransformation(dds75)
+
+# get normalized counts
+norm.counts <- assay(dds_norm) %>% t()
+norm.counts <- norm.counts[rownames(col_metada),]
+
+#####Network Construction#####
+# Choose a set of soft-thresholding powers
+power <- c(c(1:10), seq(from = 12, to = 50, by = 2))
+
+# Call the network topology analysis function
+sft <- pickSoftThreshold(norm.counts,
+                         powerVector = power,
+                         networkType = "signed",
+                         verbose = 5)
+
+sft.data <- sft$fitIndices
+
+# visualization to pick power
+
+a1 <- ggplot(sft.data, aes(Power, SFT.R.sq, label = Power)) +
+  geom_point() +
+  geom_text(nudge_y = 0.1) +
+  geom_hline(yintercept = 0.8, color = 'red') +
+  labs(x = 'Power', y = 'Scale free topology model fit, signed R^2') +
+  theme_classic()
+
+a2 <- ggplot(sft.data, aes(Power, mean.k., label = Power)) +
+  geom_point() +
+  geom_text(nudge_y = 0.1) +
+  labs(x = 'Power', y = 'Mean Connectivity') +
+  theme_classic()
+
+
+grid.arrange(a1, a2, nrow = 2)
+
+
+# convert matrix to numeric
+norm.counts[] <- sapply(norm.counts, as.numeric)
+
+soft_power <- 10
+temp_cor <- cor
+cor <- WGCNA::cor
+
+# memory estimate w.r.t blocksize
+bwnet <- blockwiseModules(norm.counts,
+                          maxBlockSize = 14000,
+                          TOMType = "signed",
+                          power = soft_power,
+                          mergeCutHeight = 0.25,
+                          numericLabels = FALSE,
+                          randomSeed = 1234,
+                          verbose = 3)
+
+
+cor <- temp_cor
+
+####Module Eigengenes####
+module_eigengenes <- bwnet$MEs
+
+# Print out a preview
+head(module_eigengenes)
+
+# get number of genes for each module
+table(bwnet$colors)
+
+# Plot the dendrogram and the module colors before and after merging underneath
+plotDendroAndColors(bwnet$dendrograms[[1]], cbind(bwnet$unmergedColors, bwnet$colors),
+                    c("unmerged", "merged"),
+                    dendroLabels = FALSE,
+                    addGuide = TRUE,
+                    hang= 0.03,
+                    guideHang = 0.05)
+
+
+moduleColors <- bwnet$colors
+
+####Relate modules to traits####
+# create traits file - binarize categorical variables
+traits <- col_metada %>% 
+  mutate(metastatisi = ifelse(grepl('YES', metastatic_disease_confirmed), 1, 0)) %>% 
+  dplyr::select(23)
+
+# binarize categorical variables
+type.out <- binarizeCategoricalColumns(col_metada$TS,
+                                           includePairwise = FALSE,
+                                           includeLevelVsAll = TRUE,
+                                           minCount = 1)
+
+traits <- cbind(traits, type.out)
+
+# Define numbers of genes and samples
+nSamples <- nrow(norm.counts)
+nGenes <- ncol(norm.counts)
+
+
+module.trait.corr <- cor(module_eigengenes, traits, use = 'p')
+module.trait.corr.pvals <- corPvalueStudent(module.trait.corr, nSamples)
+
+
+
+# visualize module-trait association as a heatmap
+
+heatmap.data <- merge(module_eigengenes, traits, by = 'row.names')
+
+head(heatmap.data)
+
+heatmap.data <- heatmap.data[,-1]
+colnames(heatmap.data)[8:13] <- c("Metastasis", "LMS", "MF", "SS", "UPS", "MPNST")
+
+CorLevelPlot(heatmap.data,
+             x = names(heatmap.data)[8:13],
+             y = names(heatmap.data)[1:7],
+             col = c("blue1", "skyblue", "white", "pink", "red"),
+             main = "WCGNA in mRNA data of Sarcomas with Type of Tumor and Type of Sarcoma",
+             cexMain = 0.8
+             )
+
+#See the genes in a specific module
+module.gene.mapping <- as.data.frame(bwnet$colors)
+module.gene.mapping %>% 
+  filter(`bwnet$colors` == 'black') %>% 
+  rownames()
+
+####Indetify Hub genes####
+lms_t <- as.data.frame(traits$LMS)
+names(lms_t) <- "lms_t"
+
+#names (colors) of the modules
+modNames <-  substring(names(module_eigengenes), 3)
+
+#Signifcance of the gene in thee module
+geneModuleMembership <- as.data.frame(cor(norm.counts, module_eigengenes, use = "p"))
+MMPvalue <- as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples))
+
+names(geneModuleMembership) <- paste("MM", modNames, sep="")
+names(MMPvalue) <- paste("p.MM", modNames, sep="")
+
+#Significnace of the genes in the clinical traits
+geneTraitSignificance <- as.data.frame(cor(norm.counts, lms_t, use = "p"))
+GSPvalue <- as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples))
+GSPvalue_adjust <- as.data.frame(p.adjust(p <- as.matrix(GSPvalue),method="fdr"))
+
+names(geneTraitSignificance) <- paste("GS.", names(lms_t), sep="")
+names(GSPvalue) <- paste("p.GS.", names(lms_t), sep="")
+names(GSPvalue_adjust) <- paste("p.Adjust.GS.", names(lms_t), sep="")
+
+#Vizualize the Module Membership in function of the gene significance
+module <- "blue" #########################putting the color below the plot
+column <- match(module, modNames)
+moduleGenes <- moduleColors==module
+
+verboseScatterplot(abs(geneModuleMembership[moduleGenes, column]),
+                   abs(geneTraitSignificance[moduleGenes, 1]),
+                   xlab = paste("Module Membership in", module, "module"),
+                   ylab = "Gene significance for LMS",
+                   main = paste("Module membership vs. gene significance\n"),
+                   cex.main = 1.2, cex.lab = 1.2, cex.axis = 1.2, col = module)
+
+#Create a dataframe isto all the info
+geneInfo0 <- data.frame(EST = colnames(norm.counts),
+                       moduleColor = moduleColors,
+                       geneTraitSignificance,
+                       GSPvalue,
+                       GSPvalue_adjust)
+
+
+modOrder <- order(-abs(cor(module_eigengenes, lms_t, use = "p")))
+for (mod in 1:ncol(geneModuleMembership))
+{
+  oldNames = names(geneInfo0)
+  geneInfo0 = data.frame(geneInfo0, geneModuleMembership[, modOrder[mod]], 
+                         MMPvalue[, modOrder[mod]]);
+  names(geneInfo0) = c(oldNames, paste("MM.", modNames[modOrder[mod]], sep=""),
+                       paste("p.MM.", modNames[modOrder[mod]], sep=""))
+}
+geneOrder <- order(geneInfo0$moduleColor, -abs(geneInfo0$GS.lms_t))
+geneInfo <- geneInfo0[geneOrder, ]
+
+#Select the module, indentify the significnat hug genes 
+blue <- geneInfo %>%
+  filter(moduleColor=="blue") %>%
+  filter(abs(GS.lms_t) >= 0.2) %>%
+  filter(p.Adjust.GS.lms_t <= 0.05) %>%
+  filter(abs(MM.blue) >= 0.8) %>%
+  filter(p.MM.blue <= 0.05)
+
+#Save the data
+write.xlsx(blue,"WCGNA_all.xlsx")

@@ -1,0 +1,450 @@
+######Dowoload Data TCGA#####
+setwd("~/Desktop/Sarcomas/TCGA_Data_R/")
+#mRNA
+query.exp.hg38 <- GDCquery(project = "TCGA-SARC", 
+                           data.category = "Transcriptome Profiling", 
+                           data.type = "Gene Expression Quantification", 
+                           workflow.type = "STAR - Counts", experimental.strategy = "RNA-Seq")
+GDCdownload(query.exp.hg38)
+
+genexp <- GDCprepare(query = query.exp.hg38, 
+                     summarizedExperiment = FALSE,
+                     save = TRUE, 
+                     save.filename = "exp.rda")
+
+save(genexp,file="mRNA_TCGA.RData")
+
+#genomics Data#SNV
+query.MSNV <- GDCquery(project = "TCGA-SARC", 
+                       data.category = "Simple Nucleotide Variation",
+                      data.type = "Masked Somatic Mutation")
+GDCdownload(query.MSNV)
+MSNV <- GDCprepare(query = query.MSNV,
+                   save = TRUE, 
+                   save.filename = "MSNV.rda")
+
+
+save(MSNV, file="DNA_TCGA.RData")
+ 
+#Clinical Data
+query <- GDCquery(
+  project = "TCGA-SARC", 
+  data.category = "Clinical",
+  data.type = "Clinical Supplement", 
+  data.format = "BCR Biotab"
+)
+GDCdownload(query)
+clinical <- GDCprepare(query,
+                       summarizedExperiment = FALSE,
+                       save = TRUE, 
+                       save.filename = "clinical.rda")
+
+CI_TCGA<- as.data.frame(clinical[["clinical_patient_sarc"]])
+CI_TCGA <- CI_TCGA[-c(1,2),]
+names(CI_TCGA)[2]<-"Tumor_Sample_Barcode"
+
+save(clinical, file="CI_TCGA.RData")
+
+#Create Groups in the mRNA TCGA----
+#####Only Tumoral samples raw_counts######
+pref_Tums <- sapply(names(genexp[,-c(1,2,3)]),function(x)unlist(strsplit(x,"\\-"))[4])
+sample_ids <- names(pref_Tums)[grep("0[1:2:3:4:5:6:7:8:9]",pref_Tums)]
+sample_ids <- sample_ids[grep("unstranded",sample_ids)]
+duplicates <- genexp$gene_name[duplicated(genexp$gene_name)]
+genecoding<- genexp %>% 
+  filter(gene_type == "protein_coding") %>%
+  filter(!(gene_name %in% duplicates))
+geneexptum <- genecoding %>% select(all_of(sample_ids))
+geneexptum <- geneexptum[,c(1:263)]
+geneexptum <- as.data.frame(geneexptum)
+row.names(geneexptum) <- genecoding$gene_name
+patients_ids <- substring(names(geneexptum),12,23)
+colnames(geneexptum) <- patients_ids
+
+length(genecoding$gene_name)
+
+#
+
+#Leiomyosarcoma - LMS
+#Dedifferentiated liposarcoma - DL
+#Pleomorphic 'MFH' / Undifferentiated pleomorphic sarcoma - MFH
+#Myxofibrosarcoma - MF
+#Malignant Peripheral Nerve Sheath Tumors (MPNST) - MPNST
+# Undifferentiated Pleomorphic Sarcoma (UPS) - UPS
+# Desmoid Tumor - DT
+# Synovial Sarcoma  - Monophasic - SSM
+# Synovial Sarcoma  - Biphasic -SSB
+# Sarcoma; synovial; poorly differentiated - SSPD
+
+#abreviations
+sarcomatypes <- c("LMS", "DL", "MF", "MPNST","DT","UPS", "SS")
+#types of sarcomas
+stypes <- c("Leiomyosarcoma (LMS)", "Dedifferentiated liposarcoma",
+            "Pleomorphic 'MFH' / Undifferentiated pleomorphic sarcoma",
+            "Myxofibrosarcoma", "Malignant Peripheral Nerve Sheath Tumors (MPNST)", "Undifferentiated Pleomorphic Sarcoma (UPS)",
+            "Desmoid Tumor", "Synovial Sarcoma - Monophasic", "Synovial Sarcoma - Biphasic", "Sarcoma; synovial; poorly differentiated",
+            "Giant cell 'MFH' / Undifferentiated pleomorphic sarcoma with giant cells"
+)
+
+#Rtpes of sarcoma that can be grouped together
+SS <-c("Synovial Sarcoma - Monophasic","Synovial Sarcoma - Biphasic","Sarcoma; synovial; poorly differentiated")
+UPS <- c("Pleomorphic 'MFH' / Undifferentiated pleomorphic sarcoma","Giant cell 'MFH' / Undifferentiated pleomorphic sarcoma with giant cells",
+         "Undifferentiated Pleomorphic Sarcoma")
+
+#Create the list
+ts_ci<- vector("list",length = length(stypes))
+names(ts_ci)<-stypes
+
+#List with dataframes with Clinical Info for each type of sarcoma
+for(i in stypes){
+  # dataframe sbtype
+  CI_TCGA$histologic_diagnosis <- as.factor(CI_TCGA$histologic_diagnosis)
+  data <- subset(CI_TCGA, histologic_diagnosis==i)
+  # Save the information in R list
+  ts_ci[[i]] <- data
+}
+
+#Merged
+ts_ci_merged <- ts_ci
+ts_ci_merged  <- ts_ci_merged [-c(3,6,8,9,10,11)]
+ts_ci_merged[[6]] <- rbind(ts_ci[[3]], ts_ci[[6]], ts_ci[[11]])
+ts_ci_merged[[7]] <- rbind(ts_ci[[8]],ts_ci[[9]],ts_ci[[10]])
+
+names(ts_ci_merged) <- sarcomatypes
+
+#Select Gene_exp for CI
+ts_geneexp<- vector("list", length=length(ts_ci_merged))
+names(ts_geneexp) <- sarcomatypes
+
+for (i in 1:length(ts_geneexp)){
+  #Create a vector with all the patients ID in gene tum;
+  #Select only the 12 first characters (substring)
+  patientsIDs<-names(geneexptum)
+  patientsIDs<-intersect(patientsIDs,ts_ci_merged[[i]]$Tumor_Sample_Barcode)
+  ts_geneexp[[i]]<- geneexptum
+  ts_geneexp[[i]]<-ts_geneexp[[i]][,patientsIDs]
+}
+
+
+save(ts_ci,ts_ci_merged, file="CI_TCGA.RData")
+save(ts_geneexp, file="mRNA_TCGA.RData")
+
+#####mRNA_FPKM#####
+pref_Tums <- sapply(names(genexp[,-c(1,2,3)]),function(x)unlist(strsplit(x,"\\-"))[4])
+sample_ids <- names(pref_Tums)[grep("0[1:2:3:4:5:6:7:8:9]",pref_Tums)]
+sample_ids <- sample_ids[grep("fpkm_unstranded",sample_ids)]
+duplicates_fpkm <- genexp$gene_name[duplicated(genexp$gene_name)]
+genecoding<- genexp %>% 
+  filter(gene_type == "protein_coding") %>%
+  filter(!(gene_name %in% duplicates_fpkm))
+mRNA_fpkm <- genecoding %>% dplyr::select(all_of(sample_ids))
+mRNA_fpkm <- as.data.frame(mRNA_fpkm)
+row.names(mRNA_fpkm) <- genecoding$gene_name
+col_names_mRNA_fpkm <- colnames(mRNA_fpkm)
+col_names_mRNA_fpkm <- substring(col_names_mRNA_fpkm, 17,28)
+colnames(mRNA_fpkm) <- col_names_mRNA_fpkm
+tsbc <- CI_TCGA$Tumor_Sample_Barcode
+both <- intersect(tsbc,col_names_mRNA_fpkm)
+mRNA_fpkm <- mRNA_fpkm %>% dplyr::select(all_of(both))
+CI_TCGA_mRNA <- CI_TCGA %>% filter(Tumor_Sample_Barcode %in% both)
+row.names(CI_TCGA_mRNA) <- CI_TCGA_mRNA$Tumor_Sample_Barcode
+samples_mRNA <- row.names(CI_TCGA_mRNA)
+
+condition_ts_mRNA <- c()
+
+for(i in 1:length(samples_mRNA)){
+  for(j in sarcomatypes){
+    if(samples_mRNA[i] %in% names(ts_geneexp[[j]])){
+      condition_ts_mRNA <- c(condition_ts_mRNA, j)
+    }
+  }
+}
+
+CI_TCGA_mRNA$TS <- condition_ts_mRNA
+
+save(mRNA_fpkm, file = "mRNA_fpkm.RData")
+
+#####Create Groups in the DNA TCGA#####
+
+ts_dna <- vector("list", length=length(ts_ci_merged))
+names(ts_dna) <- sarcomatypes
+MSNV_II <- MSNV
+bcr_patient_barcode <-substring(MSNV_II$Tumor_Sample_Barcode,1,12)
+MSNV_II$bcr_patient_barcode <- bcr_patient_barcode
+
+for (i in 1:length(ts_dna)){
+  #Create a vector with all the patients ID in gene tum;
+  #Select only the 12 first characters (substring)
+  patientsIDs<-intersect(MSNV_II$bcr_patient_barcode,ts_ci_merged[[i]]$Tumor_Sample_Barcode)
+  ts_dna[[i]]<- MSNV_II
+  ts_dna[[i]]<-ts_dna[[i]][ts_dna[[i]]$bcr_patient_barcode %in% patientsIDs,]
+}
+
+
+save(ts_dna, file="mRNA_TCGA.RData")
+
+#####Read MSKCC files####
+ci_msk <- read.table("~/Desktop/Sarcomas/sarcoma_mskcc_2022/data_clinical_sample.txt", sep='\t', header = T)
+mut_msk <- read.table("~/Desktop/Sarcomas/sarcoma_mskcc_2022/data_mutations.txt", sep = '\t', header = T, quote = "")
+gene_matrix <- read.table("~/Desktop/Sarcomas/sarcoma_mskcc_2022/data_gene_panel_matrix.txt", sep = '\t', header = T)
+cp_msk <- read.table("~/Desktop/Sarcomas/sarcoma_mskcc_2022/data_clinical_patient.txt", sep='\t', header = T)
+sv_msk <- read.table("~/Desktop/Sarcomas/sarcoma_mskcc_2022/data_sv.txt", sep='\t', header = T)
+
+ci_msk$DPS <- cp_msk$DETAILED_PRIMARY_SITE
+ci_msk$OS_STATUS <- cp_msk$OS_STATUS
+ci_msk$OS_MONTHS <- cp_msk$OS_MONTHS
+names(ci_msk)[2]<- "Tumor_Sample_Barcode"
+
+save(ci_msk,mut_msk,gene_matrix,cp_msk,sv_msk, file="mkscc_data.RData")
+
+#####Create MSKCC Groups####
+st_msk <- unique(ci_msk$CANCER_TYPE_DETAILED)
+
+ts_ci_msk <- vector("list", length=length(st_msk))
+names(ts_ci_msk) <- st_msk
+
+for(i in st_msk){
+  # dataframe sbtype
+  data <- ci_msk %>% filter(CANCER_TYPE_DETAILED==i)
+  # Save the information in R list
+  ts_ci_msk[[i]] <- data
+}
+
+#Select mut for CI
+ts_msk <- vector("list", length=length(st_msk))
+names(ts_msk) <- st_msk
+
+for (i in 1:length(ts_msk)){
+  #Create a vector with all the patients ID in gene tum;
+  #Select only the 12 first characters (substring)
+  patientsIDs<-intersect(mut_msk$Tumor_Sample_Barcode,ts_ci_msk[[i]]$Tumor_Sample_Barcode)
+  ts_msk[[i]] <- mut_msk[mut_msk$Tumor_Sample_Barcode %in% patientsIDs, ]
+}
+
+#Selec primary vs metastasis
+samty <- unique(ci_msk$SAMPLE_TYPE)
+
+samty_msk_ci <- vector("list", length=length(samty))
+names(samty_msk_ci) <- samty
+
+for (i in samty){
+  samty_msk_ci[[i]] <- ci_msk[ci_msk$SAMPLE_TYPE==i,]
+}
+
+#sample type mut data
+samty_msk <- vector("list", length=length(samty))
+names(samty_msk) <- samty
+
+for (i in samty){
+  #Create a vector with all the patients ID in gene tum;
+  #Select only the 12 first characters (substring)
+  patientsIDs<-intersect(mut_msk$Tumor_Sample_Barcode,samty_msk_ci[[i]]$Tumor_Sample_Barcode)
+  samty_msk[[i]] <- mut_msk[mut_msk$Tumor_Sample_Barcode %in% patientsIDs,]
+}
+
+#####Read ASP_18 Files####
+ci_asp_18 <- read.table("~/Desktop/Sarcomas/angs_project_painter_2018 2/data_clinical_sample.txt", sep='\t', header = T)
+amp_18 <- read.csv("~/Desktop/Sarcomas/angs_project_painter_2018 2/data_gistic_genes_amp.txt", sep='\t', header = T)
+del_18 <- read.csv("~/Desktop/Sarcomas/angs_project_painter_2018 2/data_gistic_genes_del.txt", sep='\t', header = T)
+mut_18 <- read.csv("~/Desktop/Sarcomas/angs_project_painter_2018 2/data_mutations.txt", sep='\t', header = T)
+mutsig_18 <- read.csv("~/Desktop/Sarcomas/angs_project_painter_2018 2/data_mutsig.txt", sep='\t', header = T)
+cna_18 <- read.csv("~/Desktop/Sarcomas/angs_project_painter_2018 2/data_cna.txt", sep='\t', header = T)
+cp_asp_18 <- read.table("~/Desktop/Sarcomas/angs_project_painter_2018 2/data_clinical_sample.txt", sep='\t', header = T)
+
+names(ci_asp_18)[3]="Tumor_Sample_Barcode"
+
+maf_18 <- read.maf(maf = mut_18,
+                   clinicalData = ci_asp_18,
+                   gisticAmpGenesFile = amp_18,
+                   gisticDelGenesFile = del_18,
+                   isTCGA = F)
+
+#####Create ASP_18 Groups####
+tmb <- c("High", "Low")
+
+#CI for ASP18
+tmb_asp_18_ci <- vector("list", length=length(tmb))
+names(tmb_asp_18_ci) <- tmb
+
+for(i in 1:length(tmb_asp_18_ci)){
+  if(tmb[i] == "High"){
+    a <- ci_asp_18 %>% filter(TMB_NONSYNONYMOUS >= 10)
+    tmb_asp_18_ci[[i]] <- a
+  }
+  if(tmb[i] == "Low"){
+    a <- ci_asp_18 %>% filter(TMB_NONSYNONYMOUS < 10)
+    tmb_asp_18_ci[[i]] <- a
+  }
+}
+
+#Mut data for TMB ASP 18
+tmb_asp_18 <- vector("list", length=length(tmb))
+names(tmb_asp_18) <- tmb
+
+for (i in 1:length(tmb)){
+  #Create a vector with all the patients ID in gene tum;
+  #Select only the 12 first characters (substring)
+  patientsIDs<-intersect(mut_18$Tumor_Sample_Barcode,tmb_asp_18_ci[[i]]$Tumor_Sample_Barcode)
+  tmb_asp_18[[i]] <- mut_18[mut_18$Tumor_Sample_Barcode %in% patientsIDs, ]
+}
+
+#####Read ASP_20 Files####
+ci_asp_20 <- read.table("~/Desktop/Sarcomas/AngiosarcomaProject_2020/data_clinical_sample.txt", sep='\t', header = T)
+cp_asp_20 <- read.csv("~/Desktop/Sarcomas/AngiosarcomaProject_2020/data_clinical_patient.txt", sep='\t', header = T)
+amp_20 <- read.csv("~/Desktop/Sarcomas/AngiosarcomaProject_2020/data_gistic_genes_amp.txt", sep='\t', header = T)
+del_20 <- read.csv("~/Desktop/Sarcomas/AngiosarcomaProject_2020/data_gistic_genes_del.txt", sep='\t', header = T)
+mut_20 <- read.csv2("~/Desktop/Sarcomas/AngiosarcomaProject_2020/data_mutations.txt", sep='\t', header = T, quote = "" )
+mutsig_20 <- read.csv("~/Desktop/Sarcomas/AngiosarcomaProject_2020/data_mutsig.txt", sep='\t', header = T)
+dtt_20 <- read.csv("~/Desktop/Sarcomas/AngiosarcomaProject_2020/data_timeline_treatment.txt", sep='\t', header = T)
+dtp_20 <- read.csv("~/Desktop/Sarcomas/AngiosarcomaProject_2020/data_timeline_procedure.txt", sep='\t', header = T)
+cna_20 <- read.csv("~/Desktop/Sarcomas/AngiosarcomaProject_2020/data_cna.txt", sep='\t', header = T)
+
+b_id <- sapply(mut_20$Tumor_Sample_Barcode,function(x)unlist(strsplit(x,"_"))[4])
+pos_b <- c()
+for(i in 1:length(b_id)){
+  if(b_id[i]=="BLOOD"){pos_b<-c(pos_b,i)}
+}
+
+mut_20_b <- mut_20[-c(pos_b),]
+
+names(ci_asp_20)[3]="Tumor_Sample_Barcode"
+ci_asp_20_b <- ci_asp_20[-c(73:83),]
+
+maf_20 <- read.maf(maf = mut_20_b,
+                clinicalData = ci_asp_20,
+                gisticAmpGenesFile = amp_20,
+                gisticDelGenesFile = del_20,
+                isTCGA = F)
+
+#####Create ASP_20 Groups####
+tmb <- c("High", "Low")
+
+#CI for ASP20
+tmb_asp_20_ci <- vector("list", length=length(tmb))
+names(tmb_asp_20_ci) <- tmb
+
+for(i in 1:length(tmb_asp_20_ci)){
+  if(tmb[i] == "High"){
+    a <- ci_asp_20_b %>% filter(TMB_NONSYNONYMOUS >= 10)
+    tmb_asp_20_ci[[i]] <- a
+  }
+  if(tmb[i] == "Low"){
+    a <- ci_asp_20_b %>% filter(TMB_NONSYNONYMOUS < 10)
+    tmb_asp_20_ci[[i]] <- a
+  }
+}
+
+#Mut data for TMB ASP 20
+tmb_asp_20 <- vector("list", length=length(tmb))
+names(tmb_asp_20) <- tmb
+
+for (i in 1:length(tmb)){
+  #Create a vector with all the patients ID in gene tum;
+  #Select only the 12 first characters (substring)
+  patientsIDs<-intersect(mut_20_b$Tumor_Sample_Barcode,tmb_asp_20_ci[[i]]$Tumor_Sample_Barcode)
+  tmb_asp_20[[i]] <- mut_20_b[mut_20_b$Tumor_Sample_Barcode %in% patientsIDs, ]
+}
+
+#####Create MAF files####
+#TCGA all cohort
+tcga_all_maf <- read.maf(maf = MSNV_II,
+                  clinicalData = CI_TCGA, isTCGA = T
+
+#TCGA type of sarcoma
+tcga_maf_files <- vector("list", length=length(sarcomatypes))
+names(tcga_maf_files) <- sarcomatypes 
+
+for(i in 1:length(tcga_maf_files)){
+  mut <- ts_dna[[i]]
+  maf <- read.maf(maf = mut,
+                  clinicalData = CI_TCGA, isTCGA = T)
+  tcga_maf_files[[i]] <- maf
+}
+
+#MSKCC all cohort
+mskcc_all_maf <- read.maf(maf = mut_msk,
+                  clinicalData = ci_msk , isTCGA = F)
+
+#MSKCC type of sarcoma
+msk_maf_files <-  vector("list", length=length(st_msk))
+names(msk_maf_files) <- st_msk
+msk_maf_files <- msk_maf_files[-c(33,36)]
+
+for(i in names(msk_maf_files)){
+  mut <- ts_msk[[i]]
+  maf <- read.maf(maf = mut,
+                  clinicalData = ci_msk , isTCGA = F)
+  msk_maf_files[[i]] <- maf
+}
+
+#MSKCC primary vs metastais
+msk_maf_files_samty <-  vector("list", length=length(samty))
+names(msk_maf_files_samty) <- samty
+
+for(i in names(msk_maf_files_samty)){
+  mut <- samty_msk[[i]]
+  maf <- read.maf(maf = mut,
+                  clinicalData = ci_msk, 
+                  isTCGA = F)
+  msk_maf_files_samty[[i]] <- maf
+}
+
+#Merge all the files
+all_maf <- c(tcga_maf_files,
+             msk_maf_files, msk_maf_files_samty)
+
+
+write(names(all_maf), "Types_of_Sarcoma.txt")
+
+#####DepMap####
+#types of sarcoma
+types_of_sarcoma <- c("Leiomyosarcoma", 
+                      "Undifferentiated Pleomorphic Sarcoma/Malignant Fibrous Histiocytoma/High-Grade Spindle Cell Sarcoma",
+                      "Synovial Sarcoma", "Dedifferentiated Liposarcoma", "Malignant Peripheral Nerve Sheath Tumor")
+#Read files and prepare the dat
+#info about cell line models
+model <- read.csv2("~/Downloads/Model.csv", header = T, sep = ",")
+model_sar <- model %>% dplyr::filter(OncotreeSubtype %in% types_of_sarcoma)
+model_id_sar <- model_sar$ModelID
+#geneexpression data in cell lines
+gene_profile <- read.csv2("~/Downloads/OmicsExpressionProteinCodingGenesTPMLogp1.csv", header = T, sep = ",")
+geneexp_sarc <- gene_profile %>% dplyr::filter(X %in% model_id_sar)
+rownames(geneexp_sarc) <- geneexp_sarc$X
+geneexp_sarc <- geneexp_sarc[,-1]
+geneexp_sarc_I <- t(geneexp_sarc)
+geneexp_sarc_I <- as.data.frame(geneexp_sarc_I)
+geneexp_sarc_I <- as.data.frame(sapply(geneexp_sarc_I, as.numeric))
+rownames(geneexp_sarc_I) <- colnames(geneexp_sarc)
+#gsea data
+
+
+
+rownames(model_sar)<-model_sar$ModelID
+gene_model <- intersect(rownames(model_sar), colnames(geneexp_sarc_I))
+model_sar <- model_sar[gene_model,]
+geneexp_sarc_I <- geneexp_sarc_I[,gene_model]
+
+#Abreviate their name and create a vector with the types of cell lines per order
+samples <- colnames(geneexp_sarc_I)
+condition_ts <- c()
+
+for(i in 1:length(samples)){
+  if(model_sar$OncotreeSubtype[i]=="Dedifferentiated Liposarcoma"){
+    condition_ts <- c(condition_ts, "DDLPS")
+  }
+  if(model_sar$OncotreeSubtype[i]=="Leiomyosarcoma"){
+    condition_ts <- c(condition_ts, "LMS")
+  }
+  if(model_sar$OncotreeSubtype[i]=="Synovial Sarcoma"){
+    condition_ts <- c(condition_ts, "SS")
+  }
+  if(model_sar$OncotreeSubtype[i]=="Malignant Peripheral Nerve Sheath Tumor"){
+    condition_ts <- c(condition_ts, "MPNST")
+  }
+  if(model_sar$OncotreeSubtype[i]=="Undifferentiated Pleomorphic Sarcoma/Malignant Fibrous Histiocytoma/High-Grade Spindle Cell Sarcoma"){
+    condition_ts <- c(condition_ts, "UPS")
+  }
+}
+
+model_sar$TS <- condition_ts
+
